@@ -1,0 +1,31 @@
+{
+  "apiKey": "${SHOPIFY_API_KEY}",
+  "apiSecret": "${SHOPIFY_API_SECRET}",
+  "storefrontUrl": "${SHOPIFY_STOREFRONT_URL}",
+  "storefrontAccessToken": "${SHOPIFY_STOREFRONT_TOKEN}",
+  "webhookSecret": "${SHOPIFY_WEBHOOK_SECRET}",
+  "apiVersion": "2024-10",
+  "features": {
+    "3dViewer": true,
+    "aiRecommendations": true,
+    "sustainabilityData": true,
+    "sizePredict": true,
+    "voiceCommerce": true
+  },
+  "endpoints": {
+    "products": "/admin/api/2024-10/products.json",
+    "storefront": "/api/2024-10/graphql.json",
+    "checkout": "/admin/api/2024-10/checkouts.json",
+    "webhooks": "/admin/api/2024-10/webhooks.json"
+  },
+  "caching": {
+    "products": 300,
+    "recommendations": 900,
+    "3dModels": 3600
+  },
+  "ai": {
+    "sizePredictionModel": "size-predict-v2",
+    "recommendationEngine": "hybrid-cf-content",
+    "sustainabilityCalculator": "carbon-footprint-v1"
+  }
+}
