@@ -1,0 +1,197 @@
+name: CI/CD Pipeline 2026
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  NODE_VERSION: '20'
+  PERFORMANCE_BUDGET: '150kb'
+
+jobs:
+  lint-and-analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: |
+          cd frontend && npm ci
+          cd ../backend && npm ci
+          cd ../agents && npm ci
+          cd ../ai-service && npm ci
+      
+      - name: Lint and format
+        run: |
+          cd frontend && npm run lint && npm run format:check
+          cd ../backend && npm run lint && npm run format:check
+      
+      - name: Static analysis
+        run: |
+          cd frontend && npm run analyze
+          cd ../backend && npm run analyze
+  
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test_db
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: |
+          cd frontend && npm ci
+          cd ../backend && npm ci
+          cd ../agents && npm ci
+      
+      - name: Run unit tests
+        run: |
+          cd frontend && npm test -- --coverage
+          cd ../backend && npm test -- --coverage
+          cd ../agents && npm test -- --coverage
+      
+      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql://postgres:test@localhost:5432/test_db
+          REDIS_URL: redis://localhost:6379
+        run: |
+          cd backend && npm run test:integration
+      
+      - name: Performance tests
+        run: |
+          cd frontend && npm run build
+          npm run test:performance
+  
+  security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run security audit
+        run: |
+          cd frontend && npm audit --audit-level high
+          cd ../backend && npm audit --audit-level high
+      
+      - name: Dependency vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+  
+  build:
+    needs: [lint-and-analyze, test, security]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+      
+      - name: Install and build
+        run: |
+          cd frontend && npm ci && npm run build
+          cd ../backend && npm ci && npm run build
+      
+      - name: Bundle size check
+        run: |
+          cd frontend
+          BUNDLE_SIZE=$(du -sh dist | cut -f1)
+          echo "Bundle size: $BUNDLE_SIZE"
+          # Check if bundle exceeds budget
+          if [[ $(du -k dist | cut -f1) -gt 150 ]]; then
+            echo "Bundle size exceeds performance budget!"
+            exit 1
+          fi
+      
+      - name: Build Docker images
+        run: |
+          docker build -t clothing-mvp/frontend ./frontend
+          docker build -t clothing-mvp/backend ./backend
+          docker build -t clothing-mvp/agent ./agents
+          docker build -t clothing-mvp/ai-service ./ai-service
+  
+  e2e-tests:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start services
+        run: docker-compose up -d
+      
+      - name: Wait for services
+        run: |
+          sleep 30
+          curl -f http://localhost:3000 || exit 1
+          curl -f http://localhost:5000/api/health || exit 1
+      
+      - name: Run E2E tests
+        run: |
+          cd frontend && npm run test:e2e
+      
+      - name: Cleanup
+        run: docker-compose down
+  
+  deploy:
+    needs: [build, e2e-tests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Deploy to AWS Lightsail
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          LIGHTSAIL_REGION: us-east-1
+        run: |
+          # Install AWS CLI
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip awscliv2.zip
+          sudo ./aws/install
+          
+          # Configure AWS
+          aws configure set aws_access_key_id $AWS_ACCESS_KEY_ID
+          aws configure set aws_secret_access_key $AWS_SECRET_ACCESS_KEY
+          aws configure set default.region $LIGHTSAIL_REGION
+          
+          # Deploy to container service
+          aws lightsail create-container-service-deployment \
+            --service-name clothing-mvp \
+            --containers file://lightsail-containers.json \
+            --public-endpoint file://lightsail-public-endpoint.json
+      
+      - name: Post-deployment tests
+        run: |
+          sleep 60  # Wait for deployment
+          # Add health checks for production environment
+          curl -f https://your-domain.com/api/health || exit 1
+          # Run smoke tests
+          npm run test:smoke
